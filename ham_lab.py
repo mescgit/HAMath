@@ -54,7 +54,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 LM_STUDIO_URL = "http://192.168.0.183:1234/v1"
 
 # Conjecture generation — creative, broad mathematical reasoning
-DEFAULT_MODEL  = "qwen/qwen2.5-coder-32b"
+# Gemma 4 26B-A4B: MoE (4B active), 256K context, fast, strong reasoning+code
+DEFAULT_MODEL  = "google/gemma-4-26b-a4b"
 
 # Lean proof repair — specialized formal verification model
 PROVER_MODEL   = "deepseek-prover-v2-7b"
@@ -432,6 +433,12 @@ class MathResearchLab:
             self._seed_last_cycle[c.get("seed", "")] = self.cycle
 
         new.sort(key=self._score, reverse=True)
+
+        # Seed quality filter: skip seeds that look like escaped code templates
+        # or prompt echoes that leaked into the mesh. These waste LLM calls and
+        # produce meaningless output. (The _is_clean_conjecture guard on fold-back
+        # stops them re-entering, but we also skip the LLM call entirely here.)
+        new = [c for c in new if self._is_clean_conjecture(c.get("seed", ""))]
 
         # Diversity filter: cap how many times the same domain seed prefix can
         # appear in a single batch. Prevents one strong attractor (e.g. CLT)

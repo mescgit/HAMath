@@ -51,7 +51,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-s
 LM_STUDIO_URL = "http://192.168.0.183:1234/v1"
 
 # Conjecture generation — creative, broad mathematical reasoning
-DEFAULT_MODEL = "qwen/qwen2.5-coder-32b"
+# Gemma 4 26B-A4B: MoE (4B active), 256K context, fast, strong reasoning+code
+DEFAULT_MODEL = "google/gemma-4-26b-a4b"
 
 # Lean proof repair — specialized formal verification model
 # Used for all repair attempts after the first formalization
