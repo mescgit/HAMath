@@ -327,13 +327,37 @@ class MathResearchLab:
     # Feedback loop
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_clean_conjecture(text: str) -> bool:
+        """
+        Return False if the text looks like an LLM prompt echo or code fragment
+        rather than a genuine plain-English conjecture.  Such strings must not
+        be folded into the mesh — they cause prompt-template contamination that
+        surfaces as nonsense seeds in future cycles.
+        """
+        if len(text) < 20:
+            return False
+        # Code fragments: backticks, escaped newlines, triple-quotes
+        if "`" in text or "\\n" in text or '"""' in text:
+            return False
+        # Looks like the LLM echoed the output-format hint verbatim
+        if "```lean" in text or "```" in text:
+            return False
+        # Common prompt-echo patterns
+        if text.endswith(('"', "```", "```.")) and "`" in text:
+            return False
+        # Very long lines with no spaces are probably code / base64 / hashes
+        if len(text) > 50 and " " not in text:
+            return False
+        return True
+
     def _fold_back(self, result: dict) -> bool:
         """
         Embed the discovered conjecture and fold it into the growing mesh.
         Returns True if the fold happened (discovery was novel enough).
         """
         conjecture = result.get("conjecture_text", "").strip()
-        if len(conjecture) < 20:
+        if not self._is_clean_conjecture(conjecture):
             return False
 
         vec = self.embedder.embed(conjecture)

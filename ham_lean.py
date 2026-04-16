@@ -592,6 +592,15 @@ def extract_conjecture(text: str, lean_code: str = "") -> str:
     # 2. First prose sentence in the LLM text (not a Lean keyword line)
     for line in text.splitlines():
         line = line.strip()
+        # Skip lines that are code fragments: backticks, escaped newlines,
+        # end-of-string markers, or anything that looks like the LLM echoing
+        # a prompt template back (these contaminate the mesh if folded in).
+        if "`" in line:
+            continue
+        if "\\n" in line or '"""' in line or "'''" in line:
+            continue
+        if line.endswith(('"', "'", "```", "```.")):
+            continue
         if (line and not line.startswith(("```", "--", "#", "*", "-", ">"))
                 and not re.match(r"^(theorem|lemma|def|import|//|RULE|HINT|Example|NOTE)", line, re.I)
                 and len(line) > 20 and ":" not in line[:5]):
