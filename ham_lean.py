@@ -145,7 +145,11 @@ LEAN_MATHLIB_SYSTEM_PROMPT = (
     "  import Mathlib.Combinatorics.SimpleGraph.Basic         -- graph theory\n\n"
     "  DO NOT use: Mathlib.MeasureTheory.Integral.Bochner (broken cache)\n"
     "  DO NOT use: Mathlib.MeasureTheory.Integral.IntervalIntegral (broken cache)\n"
-    "  DO NOT use: Mathlib.Analysis.SpecialFunctions.Integrals (broken cache)\n\n"
+    "  DO NOT use: Mathlib.Analysis.SpecialFunctions.Integrals (broken cache)\n"
+    "  DO NOT use: Mathlib.MeasureTheory.Probability.Independence.Basic (missing cache)\n"
+    "  DO NOT use: Mathlib.Probability.StochasticProcess.Stopping (missing cache)\n"
+    "  DO NOT use: Mathlib.Topology.Instances.ENNReal (missing cache)\n"
+    "  DO NOT use: Mathlib.Analysis.ProbabilityMassFunction.Basic (missing cache)\n\n"
     "RULES:\n"
     "  - Use `sorry` for proof bodies you cannot complete.\n"
     "  - The STATEMENT must be type-correct — Lean will check it.\n"
@@ -203,6 +207,8 @@ DEEPSEEK_PROVER_PROMPT = (
     "  - In Mathlib mode, keep existing imports and add new ones if needed.\n"
     "  - Do not explain — output only the corrected ```lean ... ``` block.\n\n"
     "COMMON FIXES:\n"
+    "  - `object file ... does not exist` → that import has no cached .olean.\n"
+    "    Replace it with: import Mathlib.Data.Real.Basic  (or another safe module)\n"
     "  - `unknown identifier X` → check spelling; use `sorry` if X is unavailable\n"
     "  - `type mismatch` → add explicit coercions or use `norm_cast`\n"
     "  - `failed to synthesize` → add missing instance or use `sorry`\n"
@@ -547,6 +553,12 @@ def extract_lean_block(text: str) -> str:
     2. Any ``` ... ``` block that contains theorem/def/lemma
     3. Lines that look like Lean code (import/theorem/def/lemma)
     """
+    # Normalise DeepSeek-Prover's non-standard format:
+    #   ```lean`theorem foo ...```
+    # (backtick instead of newline after 'lean') → standard ```lean\ntheorem...```
+    # Also handles triple-backtick runs like ```lean```lean used by some models.
+    text = re.sub(r"```lean`+", "```lean\n", text)
+
     # 1. Explicit ```lean block
     m = re.search(r"```lean\s*(.*?)```", text, re.DOTALL)
     if m:
@@ -735,6 +747,31 @@ def llm_repair(client, model: str, lean_code: str, errors: str,
             )
         no_import_line = "Use only core Lean 4 — no import statements.\n"
     else:
+        # "object file ... does not exist" means that specific Mathlib module's
+        # pre-built .olean was never downloaded from the cache.
+        # Only safe imports from the verified list will work.
+        if "object file" in errors:
+            hints.append(
+                "  *** CRITICAL: One or more imports have a missing .olean cache file.\n"
+                "  REPLACE ALL IMPORTS with only these verified-working modules:\n"
+                "    import Mathlib.Data.Real.Basic\n"
+                "    import Mathlib.Algebra.Group.Basic\n"
+                "    import Mathlib.Topology.MetricSpace.Basic\n"
+                "    import Mathlib.Analysis.Calculus.Deriv.Basic\n"
+                "    import Mathlib.Analysis.SpecialFunctions.Pow.Real\n"
+                "    import Mathlib.Analysis.Normed.Group.Basic\n"
+                "    import Mathlib.MeasureTheory.Measure.MeasureSpace\n"
+                "    import Mathlib.MeasureTheory.Measure.Lebesgue.Basic\n"
+                "    import Mathlib.MeasureTheory.Integral.MeanInequalities\n"
+                "    import Mathlib.Probability.Independence.Basic\n"
+                "    import Mathlib.Probability.Martingale.Basic\n"
+                "    import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n"
+                "  DO NOT use: Mathlib.MeasureTheory.Probability.Independence.Basic\n"
+                "  DO NOT use: Mathlib.Probability.StochasticProcess.*\n"
+                "  DO NOT use: Mathlib.Topology.Instances.ENNReal\n"
+                "  DO NOT use: Mathlib.Analysis.ProbabilityMassFunction.*\n"
+                "  Rewrite the theorem using only the safe imports above. Use `sorry` for the proof."
+            )
         if "unknown identifier" in errors or "failed to synthesize" in errors:
             hints.append(
                 "  HINT: Check your imports. Add the specific Mathlib module that "
