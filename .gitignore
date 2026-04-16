@@ -1,0 +1,49 @@
+# HAMath — generated outputs and machine-specific files
+
+# Mesh saves (large binary files, regenerated from corpus)
+*.pt
+*.pth
+
+# Generated conjecture + journal outputs
+conjectures*.json
+lab_journal.json
+lab_state.json
+verification_results.json
+xd_conjectures.json
+
+# Machine-specific Mathlib config (paths differ per machine)
+# Run setup_mathlib.py to regenerate
+mathlib_config.json
+
+# Generated Lean output files
+lean_output/
+lab_lean/
+lab_lean_mathlib/
+
+# Corpus data (large, downloaded separately)
+ham_data/
+*.mm
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+ham_guilog.txt
