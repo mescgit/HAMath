@@ -344,11 +344,23 @@ class MathResearchLab:
         # Looks like the LLM echoed the output-format hint verbatim
         if "```lean" in text or "```" in text:
             return False
-        # Common prompt-echo patterns
-        if text.endswith(('"', "```", "```.")) and "`" in text:
-            return False
-        # Very long lines with no spaces are probably code / base64 / hashes
+        # Very long tokens with no spaces are probably code / base64 / hashes
         if len(text) > 50 and " " not in text:
+            return False
+        # Lean code fragments that leaked into the mesh as seeds
+        # e.g. "(List.range 100).foldl (fun acc z_idx =>"
+        if re.match(r"^\s*[\(\[]", text) and any(op in text for op in
+                    (".foldl", ".range", ".map", ".filter", " => ", ":= ")):
+            return False
+        # let-bindings and assignment syntax
+        if re.match(r"^let\s+\w+\s*:=", text.strip()):
+            return False
+        # Prompt template placeholder patterns
+        # e.g. "[sentence]" followed by a Lean code block."
+        #      "[one sentence]" followed by a "```lean [code] ```" block."
+        if re.search(r"\[(sentence|one sentence|code block|\.\.\.)\]", text, re.I):
+            return False
+        if re.search(r'followed by a.*(?:block|lean)', text, re.I):
             return False
         return True
 

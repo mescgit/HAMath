@@ -549,29 +549,48 @@ def _sorry_rescue(lean_code: str) -> str:
 def extract_lean_block(text: str) -> str:
     """
     Extract Lean 4 code from LLM response. Tries in order:
-    1. ```lean ... ``` fenced block
-    2. Any ``` ... ``` block that contains theorem/def/lemma
-    3. Lines that look like Lean code (import/theorem/def/lemma)
+    1. ```lean ... ``` fenced block (normalised for variant formats)
+    2. ```lean ... (unclosed fence — model omitted the closing ```)
+    3. Any ``` ... ``` block that contains Lean keywords
+    4. Lines that look like Lean code (import/theorem/def/lemma)
     """
-    # Normalise DeepSeek-Prover's non-standard format:
-    #   ```lean`theorem foo ...```
-    # (backtick instead of newline after 'lean') → standard ```lean\ntheorem...```
-    # Also handles triple-backtick runs like ```lean```lean used by some models.
-    text = re.sub(r"```lean`+", "```lean\n", text)
+    LEAN_KW = ("theorem ", "lemma ", "def ", "import ", "#check", "example ")
 
-    # 1. Explicit ```lean block
+    # ------------------------------------------------------------------
+    # Pre-normalise broken formats emitted by some models
+    # ------------------------------------------------------------------
+    # DeepSeek-Prover: ```lean`theorem ...   (backtick instead of newline)
+    text = re.sub(r"```lean`+", "```lean\n", text)
+    # Some models: ```lean  theorem ...  (spaces, no newline — split inline)
+    # Leave as-is; strategy 1's \s* already handles spaces.
+
+    # 1. Standard closed fence: ```lean ... ```
     m = re.search(r"```lean\s*(.*?)```", text, re.DOTALL)
     if m:
-        return m.group(1).strip()
+        code = m.group(1).strip()
+        if code and any(kw in code for kw in LEAN_KW):
+            return code
 
-    # 2. Any ``` block containing Lean keywords
+    # 2. Unclosed fence: ```lean ... (no closing ```)
+    # Many models (especially DeepSeek) write the block but forget to close it.
+    # Split on ```lean, take everything after, and stop at the next ``` or heading.
+    if "```lean" in text:
+        after = re.split(r"```lean", text, maxsplit=1)[1]
+        # Strip any residual leading backticks / spaces from normalization
+        after = re.sub(r"^[`\s]+", "\n", after, count=1).strip()
+        # Trim at next code fence or markdown heading
+        stop = re.search(r"^```|^#{1,6}\s", after, re.MULTILINE)
+        candidate = after[:stop.start()].strip() if stop else after.strip()
+        if candidate and any(kw in candidate for kw in LEAN_KW):
+            return candidate
+
+    # 3. Any closed ``` block containing Lean keywords
     for m in re.finditer(r"```\w*\s*(.*?)```", text, re.DOTALL):
         block = m.group(1).strip()
-        if any(kw in block for kw in
-               ("theorem ", "lemma ", "def ", "import ", "#check", "example ")):
+        if any(kw in block for kw in LEAN_KW):
             return block
 
-    # 3. Line-by-line scan for Lean-looking code
+    # 4. Line-by-line scan for Lean-looking code
     lines = text.split("\n")
     lean_lines = []
     capturing = False
