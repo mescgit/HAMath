@@ -49,11 +49,13 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-s
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 LM_STUDIO_URL = "http://192.168.0.183:1234/v1"
-DEFAULT_MODEL  = "google/gemma-4-26b-a4b"
 
-# Optional: a second model endpoint tuned for formal proofs (DeepSeek-Prover etc.)
-# If set, this model is used for the Lean verification step instead of DEFAULT_MODEL.
-PROVER_MODEL: str | None = None   # e.g. "deepseek-ai/DeepSeek-Prover-V2-7B"
+# Conjecture generation — creative, broad mathematical reasoning
+DEFAULT_MODEL = "qwen/qwen2.5-coder-32b"
+
+# Lean proof repair — specialized formal verification model
+# Used for all repair attempts after the first formalization
+PROVER_MODEL  = "deepseek-prover-v2-7b"
 
 # Mathlib config (auto-detected from mathlib_config.json if present)
 _MATHLIB_CONFIG_PATH = Path(__file__).parent / "mathlib_config.json"
@@ -181,6 +183,33 @@ LEAN_MATHLIB_SYSTEM_PROMPT = (
     "```lean\n"
     "import Mathlib.XXX\n"
     "-- your theorem here\n"
+    "```"
+)
+
+# ---------------------------------------------------------------------------
+# DeepSeek-Prover system prompt — used for all repair/proof steps
+# Tighter focus than the general prompts: error analysis + targeted fix only.
+# ---------------------------------------------------------------------------
+
+DEEPSEEK_PROVER_PROMPT = (
+    "You are DeepSeek-Prover, an expert Lean 4 theorem prover.\n"
+    "Your job is to FIX broken Lean 4 code given a specific error message.\n\n"
+    "RULES:\n"
+    "  - Read the error carefully. Fix ONLY what the error describes.\n"
+    "  - Keep the theorem statement identical — only change the proof body.\n"
+    "  - If you cannot complete the proof, use `sorry` for the proof body.\n"
+    "  - Never add `import` lines in standalone mode (no Mathlib).\n"
+    "  - In Mathlib mode, keep existing imports and add new ones if needed.\n"
+    "  - Do not explain — output only the corrected ```lean ... ``` block.\n\n"
+    "COMMON FIXES:\n"
+    "  - `unknown identifier X` → check spelling; use `sorry` if X is unavailable\n"
+    "  - `type mismatch` → add explicit coercions or use `norm_cast`\n"
+    "  - `failed to synthesize` → add missing instance or use `sorry`\n"
+    "  - `unsolved goals` → add `simp`, `ring`, `linarith`, or `sorry`\n"
+    "  - `function expected` → check argument count / namespace\n\n"
+    "Output format — ONLY this, nothing else:\n"
+    "```lean\n"
+    "-- fixed theorem\n"
     "```"
 )
 
@@ -670,7 +699,8 @@ def llm_formalize(client, model: str, conjecture: dict, attempt: int = 0,
 
 
 def llm_repair(client, model: str, lean_code: str, errors: str,
-               system_prompt: str = None, mathlib_mode: bool = False) -> str:
+               system_prompt: str = None, mathlib_mode: bool = False,
+               temperature: float = 0.3) -> str:
     """Ask the LLM to fix Lean 4 errors. Uses streaming."""
     if system_prompt is None:
         system_prompt = LEAN_SYSTEM_PROMPT
@@ -720,7 +750,7 @@ def llm_repair(client, model: str, lean_code: str, errors: str,
             f"If unsure how to prove it, replace the proof body with `sorry`.\n"
             f"Wrap your answer in ```lean ... ```."
         )},
-    ], temperature=0.3)
+    ], temperature=temperature)
 
 
 # ---------------------------------------------------------------------------
@@ -731,14 +761,15 @@ class AutoformalEngine:
     def __init__(self, client, model: str, lean_bin: str | None,
                  max_attempts: int = 3, verify: bool = True,
                  mathlib_cfg: dict | None = None,
-                 prover_client=None, prover_model: str | None = None):
+                 prover_client=None, prover_model: str | None = PROVER_MODEL):
         self.client        = client
         self.model         = model
         self.lean_bin      = lean_bin
         self.max_attempts  = max_attempts
         self.mathlib_cfg   = mathlib_cfg   # if set, use lake env lean + Mathlib prompt
         self.prover_client = prover_client or client   # separate model for proof steps
-        self.prover_model  = prover_model or model
+        # Default to PROVER_MODEL constant; fall back to main model only if explicitly None
+        self.prover_model  = prover_model if prover_model is not None else model
         self.verify        = verify and (lean_bin is not None or mathlib_cfg is not None)
 
         if mathlib_cfg:
@@ -782,10 +813,19 @@ class AutoformalEngine:
                 raw = llm_formalize(self.client, self.model, conjecture,
                                     attempt=attempt, system_prompt=self.system_prompt)
             else:
-                # We have code with errors — ask LLM to fix them
+                # We have code with errors — ask the prover model to fix them.
+                # If a dedicated prover model is configured (different from the
+                # conjecture model), use DEEPSEEK_PROVER_PROMPT and a lower
+                # temperature for more deterministic, focused repairs.
+                using_dedicated_prover = (self.prover_model != self.model)
+                repair_prompt = (DEEPSEEK_PROVER_PROMPT
+                                 if using_dedicated_prover
+                                 else self.system_prompt)
+                repair_temp   = 0.1 if using_dedicated_prover else 0.3
                 raw = llm_repair(self.prover_client, self.prover_model, lean_code, errors,
-                                 system_prompt=self.system_prompt,
-                                 mathlib_mode=(self._verifier == "mathlib"))
+                                 system_prompt=repair_prompt,
+                                 mathlib_mode=(self._verifier == "mathlib"),
+                                 temperature=repair_temp)
 
             raw_code    = extract_lean_block(raw)
             proof_status = extract_proof_status(raw)
@@ -988,9 +1028,9 @@ def main():
     parser.add_argument("--mathlib",     action="store_true",
                         help="Use Mathlib (requires setup_mathlib.py to have been run)")
     # Dual-model: separate prover model for repair steps
-    parser.add_argument("--prover-model", default=None,
-                        help="Model for Lean repair steps (e.g. deepseek-ai/DeepSeek-Prover-V2-7B). "
-                             "Defaults to --model if not set.")
+    parser.add_argument("--prover-model", default=PROVER_MODEL,
+                        help=f"Model for Lean repair steps (default: {PROVER_MODEL}). "
+                             "Pass --prover-model '' to use the same model as --model.")
     args = parser.parse_args()
 
     out_dir = Path(args.out)

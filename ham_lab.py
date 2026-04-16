@@ -52,7 +52,12 @@ from ham_embedder import Embedder
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 LM_STUDIO_URL = "http://192.168.0.183:1234/v1"
-DEFAULT_MODEL  = "google/gemma-4-26b-a4b"
+
+# Conjecture generation — creative, broad mathematical reasoning
+DEFAULT_MODEL  = "qwen/qwen2.5-coder-32b"
+
+# Lean proof repair — specialized formal verification model
+PROVER_MODEL   = "deepseek-prover-v2-7b"
 
 LAB_JOURNAL_PATH = Path("lab_journal.json")
 LAB_MESH_PATH    = Path("lab_mesh.pt")
@@ -252,6 +257,7 @@ class MathResearchLab:
         formalize_top:   int = 5,
         mesh2:           HolographicMesh | None = None,
         mathlib_cfg:     dict | None = None,
+        prover_model:    str | None = PROVER_MODEL,
     ):
         self.mesh          = mesh
         self.mesh2         = mesh2
@@ -280,11 +286,15 @@ class MathResearchLab:
         # Auto-detect Mathlib config if not explicitly passed
         if mathlib_cfg is None:
             mathlib_cfg = load_mathlib_config()
+        # Prover model uses the same endpoint but a different model name
+        prover_client = make_client(lm_url) if prover_model else None
         self.engine = AutoformalEngine(
             client, model, lean_bin,
             max_attempts=max_attempts,
             verify=verify and (lean_bin is not None or mathlib_cfg is not None),
             mathlib_cfg=mathlib_cfg,
+            prover_client=prover_client,
+            prover_model=prover_model,
         )
 
         # Cooldown map: seed_key → last cycle it was formalized.
@@ -511,7 +521,11 @@ def main():
                         help="Seed mesh (used for first run; lab grows its own copy)")
     parser.add_argument("--mesh2",         default=None,
                         help="Second domain mesh for cross-domain mode (e.g. physics_mesh.pt)")
-    parser.add_argument("--model",         default=DEFAULT_MODEL)
+    parser.add_argument("--model",         default=DEFAULT_MODEL,
+                        help=f"Conjecture generation model (default: {DEFAULT_MODEL})")
+    parser.add_argument("--prover-model",  default=PROVER_MODEL,
+                        help=f"Lean repair model (default: {PROVER_MODEL}). "
+                             "Pass '' to use the same model as --model.")
     parser.add_argument("--url",           default=LM_STUDIO_URL)
     parser.add_argument("--dream-cycles",  type=int, default=1000,
                         help="Scholar dream cycles per lab cycle (default 1000)")
@@ -595,11 +609,16 @@ def main():
             else:
                 print("  Mathlib: not configured  (run setup_mathlib.py to enable)")
 
+    prover_model = args.prover_model or None   # treat empty string as None
+
     print(f"\n  Dream cycles / round : {args.dream_cycles}")
     print(f"  Formalize top        : {args.formalize_top}")
     print(f"  Max lab cycles       : {'inf' if not args.max_cycles else args.max_cycles}")
     print(f"  Cross-domain         : {'yes' if mesh2 else 'no'}")
     print(f"  Mathlib mode         : {'yes' if mathlib_cfg else 'no (standalone)'}")
+    print(f"  Conjecture model     : {args.model}")
+    print(f"  Repair model         : {prover_model or args.model}  "
+          f"{'(dual-model)' if prover_model and prover_model != args.model else '(same model)'}")
     print(f"  Output               : {args.out}/")
     print(f"\n  Ctrl-C to stop cleanly.\n")
     print("="*60)
@@ -610,6 +629,7 @@ def main():
         max_attempts=args.attempts, verify=not args.no_verify,
         mathlib_cfg=mathlib_cfg,
         dream_cycles=args.dream_cycles, formalize_top=args.formalize_top,
+        prover_model=prover_model,
     )
     lab.SEED_COOLDOWN = args.cooldown
 
